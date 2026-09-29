@@ -169,10 +169,11 @@ class BartCrossAttention(nn.Module):
         # batch_size, num_heads, enc_seq_len, head_dim
         value_states = self.v_proj(encoder_hidden_states).view(kv_shape).transpose(1, 2)
 
-        attn_output = eager_attention_forward(
+        attn_output = F.scaled_dot_product_attention(
             query_states,
             key_states,
             value_states,
+            is_causal=not self.is_decoder,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
@@ -396,6 +397,10 @@ class BartModel(nn.Module):
         self.encoder = BartEncoder(config)
         self.decoder = BartDecoder(config)
 
+        if config.tie_word_embeddings:
+            self.decoder.embed_tokens.weight.data = self.shared.weight.data
+            self.encoder.embed_tokens.weight.data = self.shared.weight.data
+
     def forward(
         self,
         decoder_input_ids: torch.LongTensor | None = None,
@@ -404,29 +409,6 @@ class BartModel(nn.Module):
         encoder_positions: torch.LongTensor | None = None,
         encoder_outputs: torch.Tensor | None = None,
     ) -> tuple:
-        r"""
-        decoder_input_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`, *optional*):
-            Indices of decoder input sequence tokens in the vocabulary.
-
-            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
-            [`PreTrainedTokenizer.__call__`] for details.
-
-            [What are decoder input IDs?](../glossary#decoder-input-ids)
-
-            Bart uses the `eos_token_id` as the starting token for `decoder_input_ids` generation. If `past_key_values`
-            is used, optionally only the last `decoder_input_ids` have to be input (see `past_key_values`).
-
-            For translation and summarization training, `decoder_input_ids` should be provided. If no
-            `decoder_input_ids` is provided, the model will create this tensor by shifting the `input_ids` to the right
-            for denoising pre-training following the paper.
-        decoder_attention_mask (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`, *optional*):
-            Default behavior: generate a tensor that ignores pad tokens in `decoder_input_ids`. Causal mask will also
-            be used by default.
-
-            If you want to change padding behavior, you should read [`modeling_bart._prepare_decoder_attention_mask`]
-            and modify to your needs. See diagram 1 in [the paper](https://huggingface.co/papers/1910.13461) for more
-            information on the default strategy.
-        """
 
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
@@ -452,6 +434,9 @@ class BartForConditionalGeneration(nn.Module):
         self.lm_head = nn.Linear(
             config.d_model, self.model.shared.num_embeddings, bias=False
         )
+
+        if config.tie_word_embeddings:
+            self.lm_head.weight.data = self.model.shared.weight.data
 
     def forward(
         self,
