@@ -1,0 +1,20 @@
+[project]
+name = "fast-florence2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ducviet00-h2", email = "viet.d.hoang@h2corporation.jp" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "kernels>=0.17.1",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "transformers>=5.17.0",
+]
+
+[dependency-groups]
+dev = [
+    "ipython>=9.17.1",
+]
