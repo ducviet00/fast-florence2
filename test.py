@@ -38,7 +38,6 @@ def test_logits_match_transformers() -> None:
     model = build_custom_model()
     reference = build_reference_model()
 
-    # Token IDs and position IDs happen to be identical sequences here.
     encoder_input_ids = make_token_ids(BATCH_SIZE, ENC_SEQ_LEN)
     encoder_positions = make_positions(BATCH_SIZE, ENC_SEQ_LEN)
     decoder_input_ids = make_token_ids(BATCH_SIZE, DEC_SEQ_LEN)
