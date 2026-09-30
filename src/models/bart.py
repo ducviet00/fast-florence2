@@ -3,10 +3,12 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from kernels import get_kernel
 from transformers import BartConfig
 
+activation = get_kernel("kernels-community/activation", version=1)
 ACT2FN = {
-    "gelu": F.gelu,
+    "gelu": activation.layers.Gelu(),
 }
 
 
