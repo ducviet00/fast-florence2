@@ -11,8 +11,8 @@ transformers_model = TransformersBart.from_pretrained("bart-large-cnn")
 load_model(model, "bart-large-cnn")
 encoder_input_ids = torch.arange(0, 64).reshape(2, 32)
 encoder_positions = torch.arange(0, 32).repeat(2).reshape(2, 32)
-decoder_input_ids = torch.arange(0, 1).repeat(2).reshape(2, 1)
-decoder_positions = torch.arange(0, 1).repeat(2).reshape(2, 1)
+decoder_input_ids = torch.arange(0, 10).repeat(2).reshape(2, 10)
+decoder_positions = torch.arange(0, 10).repeat(2).reshape(2, 10)
 
 with torch.inference_mode():
     transformers_out = transformers_model.forward(
@@ -20,7 +20,7 @@ with torch.inference_mode():
         decoder_input_ids=decoder_input_ids,
     )
 
-    print(transformers_out.logits)
+    expected = transformers_out.logits
 
     out = model(
         decoder_input_ids=decoder_input_ids,
@@ -28,5 +28,5 @@ with torch.inference_mode():
         encoder_input_ids=encoder_input_ids,
         encoder_positions=encoder_positions,
     )
-    real_out = model.compute_logits(out)
-    print(real_out)
+    logits = model.compute_logits(out)
+    torch.testing.assert_close(logits, expected)

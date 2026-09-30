@@ -9,6 +9,7 @@ ACT2FN = {
     "gelu": F.gelu,
 }
 
+
 class BartLearnedPositionalEmbedding(nn.Embedding):
     """
     This module learns positional embeddings up to a fixed maximum size.
@@ -41,24 +42,6 @@ class BartScaledWordEmbedding(nn.Embedding):
 
     def forward(self, input: torch.Tensor):
         return super().forward(input) * self.embed_scale
-
-
-def eager_attention_forward(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    scaling: float | None = None,
-):
-    if scaling is None:
-        scaling = query.size(-1) ** -0.5
-
-    # Take the dot product between "query" and "key" to get the raw attention scores.
-    attn_weights = torch.matmul(query, key.transpose(2, 3)) * scaling
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1)
-    attn_output = torch.matmul(attn_weights, value)
-    attn_output = attn_output.transpose(1, 2).contiguous()
-
-    return attn_output
 
 
 class BartSelfAttention(nn.Module):
@@ -107,13 +90,14 @@ class BartSelfAttention(nn.Module):
         # batch_size, num_heads, seq_len, head_dim
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        attn_output = eager_attention_forward(
+        attn_output = F.scaled_dot_product_attention(
             query_states,
             key_states,
             value_states,
+            is_causal=self.is_decoder,
         )
 
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous()
         attn_output = self.out_proj(attn_output)
 
         return attn_output
@@ -154,7 +138,7 @@ class BartCrossAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        encoder_hidden_states:  torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         input_shape = hidden_states.shape[:-1]
         # batch_size, seq_len, num_heads, head_dim
@@ -173,10 +157,10 @@ class BartCrossAttention(nn.Module):
             query_states,
             key_states,
             value_states,
-            is_causal=not self.is_decoder,
+            is_causal=False,
         )
 
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous()
         attn_output = self.out_proj(attn_output)
 
         return attn_output
@@ -382,6 +366,7 @@ class BartDecoder(nn.Module):
             )
 
         return hidden_states
+
 
 class BartModel(nn.Module):
     def __init__(self, config: BartConfig):
