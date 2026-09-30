@@ -2,7 +2,7 @@ import torch
 from transformers import BartConfig
 from transformers import BartForConditionalGeneration as HFBart
 
-from engine.context import set_context, get_context
+from engine.context import set_context
 from models.bart import BartForConditionalGeneration
 from utils.loader import load_model
 
@@ -63,10 +63,7 @@ def test_decode_loop() -> None:
             new_input_ids = torch.softmax(logits[:, -1], dim=-1).argmax(dim=-1)
             new_input_ids.unsqueeze_(1)
             next_input_ids = torch.concat([next_input_ids, new_input_ids], dim=-1)
-        print(decoder_input_ids)
-        print(next_input_ids)
         final_logits = logits
-        print(final_logits.shape)
 
     with torch.inference_mode():
         context = set_context(
@@ -87,9 +84,12 @@ def test_decode_loop() -> None:
         next_input_ids = torch.softmax(logits[:, -1], dim=-1).argmax(dim=-1)
         next_input_ids.unsqueeze_(1)
         next_positions = decoder_positions[:, -1].unsqueeze(1) + 1
-        print(logits.shape)
-        print(final_logits[:,:logits.shape[1]].shape)
-        torch.testing.assert_close(logits.cpu().float(), final_logits[:,:logits.shape[1]].cpu().float(), atol=1e-3, rtol=1e-3)
+        torch.testing.assert_close(
+            logits.cpu().float(),
+            final_logits[:, : logits.shape[1]].cpu().float(),
+            atol=1e-3,
+            rtol=1e-3,
+        )
 
         all_logits = [logits]
         context.is_prefill = False
@@ -100,29 +100,28 @@ def test_decode_loop() -> None:
                 decoder_positions=next_positions,
             )
             logits = model.compute_logits(hidden)
-            print(pos)
-            print(logits.cpu().squeeze(1).float())
-            print(final_logits[:,pos,:].cpu().float())
-            is_close = torch.allclose(logits.cpu().squeeze(1).float(), final_logits[:,pos,:].cpu().float(), atol=1e-3, rtol=1e-3)
-            # is_close = torch.allclose(logits.cpu().squeeze(1).float(), final_logits[:,pos,:].cpu().float(), atol=1e-3, rtol=1e-3)
-            pos+=1
-            print(is_close)
+            torch.testing.assert_close(
+                logits.cpu().squeeze(1).float(),
+                final_logits[:, pos, :].cpu().float(),
+                atol=1e-3,
+                rtol=1e-3,
+            )
+            pos += 1
             next_input_ids = torch.softmax(logits, dim=-1).argmax(dim=-1)
             next_positions = next_positions + 1
             all_logits.append(logits)
 
         all_logits_tensor = torch.concat(all_logits, dim=1)
-        print(all_logits_tensor.shape)
 
+    output_ids = torch.softmax(all_logits_tensor[:, :-DEC_N_STEPS], dim=-1).argmax(
+        dim=-1
+    )
+    expected_output_ids = torch.softmax(final_logits[:, :-DEC_N_STEPS], dim=-1).argmax(
+        dim=-1
+    )
+    torch.testing.assert_close(output_ids, expected_output_ids)  # OK
+    torch.testing.assert_close(all_logits_tensor, final_logits, atol=1e-3, rtol=1e-3)
 
-
-    output_ids = torch.softmax(all_logits_tensor[:, :-DEC_N_STEPS], dim=-1).argmax(dim=-1)
-    expected_output_ids = torch.softmax(final_logits[:, :-DEC_N_STEPS], dim=-1).argmax(dim=-1)
-    torch.testing.assert_close(output_ids, expected_output_ids) # OK
-    torch.testing.assert_close(all_logits_tensor, final_logits)
-    # Mismatched elements: 4219780 / 16084480 (26.2%)
-    # Greatest absolute difference: 21.95160675048828 at index (3, 69, 0) (up to 1e-05 allowed)
-    # Greatest relative difference: 1443570.125 at index (1, 69, 3590) (up to 1.3e-06 allowed)
 
 if __name__ == "__main__":
     test_decode_loop()

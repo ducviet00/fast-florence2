@@ -10,7 +10,7 @@ from engine.context import get_context
 
 activation = get_kernel("kernels-community/activation", version=1)
 ACT2FN = {
-    "gelu": activation.layers.Gelu(),
+    "gelu": F.gelu,
 }
 
 
@@ -164,7 +164,7 @@ class BartDecoderSelfAttention(nn.Module):
             q_states,
             k_states,
             v_states,
-            is_causal=True,
+            is_causal=q_states.shape[-2] == k_states.shape[-2],
         )
 
         attn_output = attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous()
