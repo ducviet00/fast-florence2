@@ -1,14 +1,15 @@
 import torch
-from transformers import AutoConfig
+from transformers import BartConfig
 from transformers import BartForConditionalGeneration as HFBart
 
-from src.models.bart import BartForConditionalGeneration
-from src.utils.loader import load_model
+from engine.context import set_context
+from models.bart import BartForConditionalGeneration
+from utils.loader import load_model
 
 MODEL_NAME = "bart-large-cnn"
-BATCH_SIZE = 4
+BATCH_SIZE = 8
 ENC_SEQ_LEN = 256
-DEC_SEQ_LEN = 512
+DEC_SEQ_LEN = 64
 VOCAB_SIZE = 1000
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -23,11 +24,11 @@ def make_positions(batch_size: int, seq_len: int) -> torch.Tensor:
     return torch.arange(seq_len, device=DEVICE).expand(batch_size, seq_len).contiguous()
 
 
-def build_custom_model() -> BartForConditionalGeneration:
-    config = AutoConfig.from_pretrained(MODEL_NAME)
+def build_custom_model() -> tuple[BartForConditionalGeneration, BartConfig]:
+    config = BartConfig.from_pretrained(MODEL_NAME)
     model = BartForConditionalGeneration(config)
     load_model(model, MODEL_NAME)
-    return model.to(DEVICE)
+    return model.to(DEVICE), config
 
 
 def build_reference_model() -> HFBart:
@@ -35,7 +36,14 @@ def build_reference_model() -> HFBart:
 
 
 def test_logits_match_transformers() -> None:
-    model = build_custom_model()
+    model, config = build_custom_model()
+    set_context(
+        is_prefill=True,
+        k_cache=[None for _ in range(config.decoder_layers)],
+        v_cache=[None for _ in range(config.decoder_layers)],
+        cross_k_cache=[None for _ in range(config.encoder_layers)],
+        cross_v_cache=[None for _ in range(config.encoder_layers)],
+    )
     reference = build_reference_model()
 
     encoder_input_ids = make_token_ids(BATCH_SIZE, ENC_SEQ_LEN)
