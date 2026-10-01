@@ -8,7 +8,7 @@ from transformers import BartConfig
 
 from engine.context import get_context
 
-activation = get_kernel("kernels-community/activation", version=1)
+flash_attn = get_kernel("kernels-community/flash-attn2", version=3)
 ACT2FN = {
     "gelu": F.gelu,
 }
@@ -129,7 +129,7 @@ class BartDecoderSelfAttention(nn.Module):
             )
         self.scaling = self.head_dim**-0.5
         self.layer_idx = layer_idx
-
+        self.k_cache = self.v_cache = torch.tensor([])
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
@@ -143,31 +143,33 @@ class BartDecoderSelfAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
         # get QKV proj
-        # batch_size, num_heads, seq_len, head_dim
-        q_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2).contiguous()
-        k_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2).contiguous()
-        v_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2).contiguous()
+        # batch_size, seq_len, num_heads, head_dim
+        q_states = self.q_proj(hidden_states).view(hidden_shape)
+        k_states = self.k_proj(hidden_states).view(hidden_shape)
+        v_states = self.v_proj(hidden_states).view(hidden_shape)
 
-        if context.k_cache[self.layer_idx] is not None and context.v_cache[self.layer_idx] is not None:
-            k_states = torch.concat([context.k_cache[self.layer_idx], k_states], dim=2)
-            v_states = torch.concat([context.v_cache[self.layer_idx], v_states], dim=2)
+        if k_states.numel() and v_states.numel() and context.slot_mapping is not None:
+            self.k_cache.view(-1, self.num_heads, self.head_dim)[context.slot_mapping] = k_states.reshape(-1, self.num_heads, self.head_dim)
+            self.v_cache.view(-1, self.num_heads, self.head_dim)[context.slot_mapping] = v_states.reshape(-1, self.num_heads, self.head_dim)
 
-        context.k_cache[self.layer_idx] = k_states.clone()
-        context.v_cache[self.layer_idx] = v_states.clone()
+        if context.is_prefill:
+            attn_output = flash_attn.flash_attn_func(
+                q_states,
+                k_states,
+                v_states,
+                causal=True,
+            )
+        else:
+            attn_output = flash_attn.flash_attn_with_kvcache(
+                q_states,
+                self.k_cache,
+                self.v_cache,
+                cache_seqlens=context.context_lens,
+                block_table=context.block_tables,
+                causal=False,
+            )
 
-        # print("="*100)
-        # print("SelfAttn:", self.layer_idx)
-        # print(q_states.shape)
-        # print(k_states.shape)
-        # print(v_states.shape)
-        attn_output = F.scaled_dot_product_attention(
-            q_states,
-            k_states,
-            v_states,
-            is_causal=q_states.shape[-2] == k_states.shape[-2],
-        )
-
-        attn_output = attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous()
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.out_proj(attn_output)
 
         return attn_output
@@ -206,42 +208,25 @@ class BartDecoderCrossAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        encoder_hidden_states: torch.Tensor | None = None,
+        encoder_hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        context = get_context()
         input_shape = hidden_states.shape[:-1]
         # batch_size, seq_len, num_heads, head_dim
         hidden_shape = (*hidden_states.shape[:-1], -1, self.head_dim)
+        q_states = self.q_proj(hidden_states).view(hidden_shape)
 
-        # batch_size, num_heads, dec_seq_len, head_dim
-        q_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        # batch_size, enc_seq_len, num_heads, head_dim
+        kv_shape = (*encoder_hidden_states.shape[:-1], -1, self.head_dim)
+        enc_k_states = self.k_proj(encoder_hidden_states).view(kv_shape)
+        enc_v_states = self.v_proj(encoder_hidden_states).view(kv_shape)
 
-        if encoder_hidden_states is not None:
-            # batch_size, num_heads, enc_seq_len, head_dim
-            kv_shape = (*encoder_hidden_states.shape[:-1], -1, self.head_dim)
-            enc_k_states = self.k_proj(encoder_hidden_states).view(kv_shape).transpose(1, 2).contiguous()
-            enc_v_states = self.v_proj(encoder_hidden_states).view(kv_shape).transpose(1, 2).contiguous()
-            context.cross_k_cache[self.layer_idx] = enc_k_states
-            context.cross_v_cache[self.layer_idx] = enc_v_states
-        else:
-            assert context.cross_k_cache is not None
-            assert context.cross_v_cache is not None
-            enc_k_states = context.cross_k_cache[self.layer_idx]
-            enc_v_states = context.cross_v_cache[self.layer_idx]
-
-        # print("="*100)
-        # print("CrossAttn:", self.layer_idx)
-        # print(q_states.shape)
-        # print(enc_k_states.shape)
-        # print(enc_v_states.shape)
-        attn_output = F.scaled_dot_product_attention(
+        attn_output = flash_attn.flash_attn_func(
             q_states,
             enc_k_states,
             enc_v_states,
-            is_causal=False,
         )
 
-        attn_output = attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous()
+        attn_output = attn_output.reshape(*input_shape, -1)
         attn_output = self.out_proj(attn_output)
 
         return attn_output
@@ -375,8 +360,8 @@ class BartEncoder(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
-        positions: torch.LongTensor,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
     ) -> torch.Tensor:
 
         inputs_embeds = self.embed_tokens(input_ids)
@@ -425,9 +410,9 @@ class BartDecoder(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
-        positions: torch.LongTensor,
-        encoder_hidden_states: torch.FloatTensor | None = None,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        encoder_hidden_states: torch.Tensor | None = None,
     ) -> torch.Tensor:
 
         inputs_embeds = self.embed_tokens(input_ids)
@@ -466,10 +451,10 @@ class BartModel(nn.Module):
 
     def forward(
         self,
-        decoder_input_ids: torch.LongTensor | None = None,
-        decoder_positions: torch.LongTensor | None = None,
-        encoder_input_ids: torch.LongTensor | None = None,
-        encoder_positions: torch.LongTensor | None = None,
+        decoder_input_ids: torch.Tensor | None = None,
+        decoder_positions: torch.Tensor | None = None,
+        encoder_input_ids: torch.Tensor | None = None,
+        encoder_positions: torch.Tensor | None = None,
     ) -> tuple:
 
         encoder_outputs = None
@@ -503,10 +488,10 @@ class BartForConditionalGeneration(nn.Module):
 
     def forward(
         self,
-        decoder_input_ids: torch.LongTensor | None = None,
-        decoder_positions: torch.LongTensor | None = None,
-        encoder_input_ids: torch.LongTensor | None = None,
-        encoder_positions: torch.LongTensor | None = None,
+        decoder_input_ids: torch.Tensor | None = None,
+        decoder_positions: torch.Tensor | None = None,
+        encoder_input_ids: torch.Tensor | None = None,
+        encoder_positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
 
         return self.model(

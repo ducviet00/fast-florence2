@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 
@@ -6,10 +6,11 @@ import torch
 @dataclass(slots=True)
 class Context:
     is_prefill: bool = False
-    k_cache: list[torch.Tensor | None] = field(default_factory=list)
-    v_cache: list[torch.Tensor | None] = field(default_factory=list)
-    cross_k_cache: list[torch.Tensor | None] = field(default_factory=list)
-    cross_v_cache: list[torch.Tensor | None] = field(default_factory=list)
+    context_lens: torch.Tensor | None = None
+    block_tables: torch.Tensor | None = None
+    slot_mapping: torch.Tensor | None = None
+    cross_block_tables: torch.Tensor | None = None
+    cross_slot_mapping: torch.Tensor | None = None
 
 
 _CONTEXT = Context()
@@ -21,18 +22,20 @@ def get_context() -> Context:
 
 def set_context(
     is_prefill,
-    k_cache=[],
-    v_cache=[],
-    cross_k_cache=[],
-    cross_v_cache=[],
+    context_lens=None,
+    block_tables=None,
+    slot_mapping=None,
+    cross_block_tables=None,
+    cross_slot_mapping=None,
 ) -> Context:
     global _CONTEXT
     _CONTEXT = Context(
-        is_prefill,
-        k_cache,
-        v_cache,
-        cross_k_cache,
-        cross_v_cache,
+        is_prefill=is_prefill,
+        context_lens=context_lens,
+        block_tables=block_tables,
+        slot_mapping=slot_mapping,
+        cross_block_tables=cross_block_tables,
+        cross_slot_mapping=cross_slot_mapping,
     )
     return _CONTEXT
 
